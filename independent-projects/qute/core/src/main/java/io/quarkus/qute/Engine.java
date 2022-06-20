@@ -6,6 +6,7 @@ import java.util.Optional;
 import java.util.function.Predicate;
 
 import io.quarkus.qute.TemplateLocator.TemplateLocation;
+import io.quarkus.qute.trace.TraceListener;
 
 /**
  * Represents a central point for template management.
@@ -191,4 +192,17 @@ public interface Engine extends ErrorInitializer {
      * @return a new builder instance initialized from this engine
      */
     EngineBuilder newBuilder();
+
+    /**
+     * Returns true if there are trace listeners and false otherwise.
+     *
+     * @return true if there are trace listeners and false otherwise.
+     */
+    public boolean hasTraceListeners();
+
+    public TraceManager getTraceManager();
+
+    public void addTraceListener(TraceListener listener);
+
+    public void removeTraceListener(TraceListener listener);
 }

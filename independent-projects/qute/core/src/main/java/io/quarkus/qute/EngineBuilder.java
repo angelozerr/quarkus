@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.ServiceLoader;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -58,6 +59,10 @@ public final class EngineBuilder {
         this.timeout = 10_000;
         this.useAsyncTimeout = true;
         this.listeners = new ArrayList<>();
+        ServiceLoader<EngineListener> listenerExtensions = ServiceLoader.load(EngineListener.class);
+        listenerExtensions.forEach(extension -> {
+            listeners.add(extension);
+        });
     }
 
     /**

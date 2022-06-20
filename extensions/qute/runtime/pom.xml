@@ -36,6 +36,10 @@
             <artifactId>quarkus-vertx</artifactId>
             <optional>true</optional>
         </dependency>
+        <dependency>
+            <groupId>io.quarkus.qute</groupId>
+            <artifactId>qute-debug</artifactId>
+        </dependency>
     </dependencies>
 
     <build>
