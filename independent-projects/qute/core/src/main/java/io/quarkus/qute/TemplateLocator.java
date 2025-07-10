@@ -1,6 +1,7 @@
 package io.quarkus.qute;
 
 import java.io.Reader;
+import java.net.URL;
 import java.util.Optional;
 
 /**
@@ -19,7 +20,7 @@ public interface TemplateLocator extends WithPriority {
      * @return the template location for the given id
      */
     Optional<TemplateLocation> locate(String id);
-
+    
     interface TemplateLocation {
 
         /**
@@ -34,6 +35,20 @@ public interface TemplateLocator extends WithPriority {
          * @return the template variant
          */
         Optional<Variant> getVariant();
+
+        /**
+         * Returns the URL pointing to the template resource.
+         * <p>
+         * This is typically a {@code file://} URL located in the runtime classpath
+         * (e.g. inside {@code target/classes} or within a JAR), rather than the original
+         * source file under {@code src/main/resources}.
+         * <p>
+         * The returned URL should represent the exact resource that was loaded
+         * and parsed by the template engine.
+         */
+        default Optional<URL> getSource() {
+            return Optional.empty();
+        }
 
     }
 

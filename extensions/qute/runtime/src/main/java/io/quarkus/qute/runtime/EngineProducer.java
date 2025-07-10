@@ -498,11 +498,11 @@ public class EngineProducer {
 
     static class ResourceTemplateLocation implements TemplateLocation {
 
-        private final URL resource;
+        private final Optional<URL> resource;
         private final Optional<Variant> variant;
 
         ResourceTemplateLocation(URL resource, Variant variant) {
-            this.resource = resource;
+            this.resource = Optional.of(resource);
             this.variant = Optional.ofNullable(variant);
         }
 
@@ -516,7 +516,7 @@ public class EngineProducer {
                 charset = StandardCharsets.UTF_8;
             }
             try {
-                return new InputStreamReader(resource.openStream(), charset);
+                return new InputStreamReader(resource.get().openStream(), charset);
             } catch (IOException e) {
                 return null;
             }
@@ -525,6 +525,11 @@ public class EngineProducer {
         @Override
         public Optional<Variant> getVariant() {
             return variant;
+        }
+
+        @Override
+        public Optional<URL> getSource() {
+            return resource;
         }
 
     }
