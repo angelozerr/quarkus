@@ -8,6 +8,8 @@ import java.util.Map;
 
 import org.eclipse.lsp4j.debug.Source;
 
+import io.quarkus.qute.Engine;
+
 /**
  * Registry responsible for resolving and managing mappings between Qute
  * template IDs and their corresponding source files.
@@ -19,6 +21,7 @@ public class SourceTemplateRegistry {
 
     private final Map<String, Source> templateIdToSource = new HashMap<>();
 
+    private final Engine engine;
     private final List<String> basePaths;
     private final List<String> fileExtensions;
 
@@ -42,8 +45,8 @@ public class SourceTemplateRegistry {
      * </li>
      * </ul>
      */
-    public SourceTemplateRegistry() {
-        this(List.of("src/main/resources/templates/", /* Roq ... */"templates/", "content/"), //
+    public SourceTemplateRegistry(Engine engine) {
+        this(engine, List.of("src/main/resources/templates/", /* Roq ... */"templates/", "content/"), //
                 List.of(".qute", ".html", ".qute.html", ".yaml", ".qute.yaml", ".yml", ".qute.yml", ".txt", ".qute.txt",
                         ".md", ".qute.md"));
     }
@@ -51,11 +54,12 @@ public class SourceTemplateRegistry {
     /**
      * Creates a registry with custom base paths and file extensions.
      *
-     * @param basePaths List of possible base directories where templates
-     *        might be located
+     * @param basePaths List of possible base directories where templates might
+     *        be located
      * @param fileExtensions List of supported file extensions for template files
      */
-    public SourceTemplateRegistry(List<String> basePaths, List<String> fileExtensions) {
+    public SourceTemplateRegistry(Engine engine, List<String> basePaths, List<String> fileExtensions) {
+        this.engine = engine;
         this.basePaths = basePaths;
         this.fileExtensions = fileExtensions;
     }
@@ -64,8 +68,8 @@ public class SourceTemplateRegistry {
      * Attempts to resolve a {@link Source} for a given template ID.
      * <p>
      * If the source was previously registered, it will be returned directly.
-     * Otherwise, this method will try to infer the source location using known
-     * base paths and file extensions.
+     * Otherwise, this method will try to infer the source location using known base
+     * paths and file extensions.
      *
      * @param templateId The Qute template identifier
      * @param previousSource The previously known source, used to infer relative
@@ -74,6 +78,26 @@ public class SourceTemplateRegistry {
      */
     public Source getSource(String templateId, Source previousSource) {
         var source = templateIdToSource.get(templateId);
+        if (source != null) {
+            return source;
+        }
+        if (engine != null) {
+            var location = engine.locate(templateId);
+            if (location.isPresent()) {
+                var sourceUri = location.get().getSource();
+                if (sourceUri.isPresent()) {
+                    try {
+                        var sourcePath = Paths.get(sourceUri.get());
+                        source = new Source();
+                        source.setPath(sourcePath.toString());
+                        templateIdToSource.put(templateId, source);
+                        return source;
+                    } catch (Exception e) {
+
+                    }
+                }
+            }
+        }
         if (source == null) {
             // Try with file extensions directly
             for (var fileExtension : fileExtensions) {
@@ -90,8 +114,7 @@ public class SourceTemplateRegistry {
             for (var basePath : basePaths) {
                 int index = path.indexOf(basePath);
                 if (index != -1) {
-                    String sourcePath = getValidSourcePath(
-                            path.substring(0, index + basePath.length()) + templateId);
+                    String sourcePath = getValidSourcePath(path.substring(0, index + basePath.length()) + templateId);
                     if (sourcePath != null) {
                         source = new Source();
                         source.setPath(sourcePath);

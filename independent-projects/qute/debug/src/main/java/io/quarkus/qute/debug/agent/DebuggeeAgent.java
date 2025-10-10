@@ -78,7 +78,7 @@ public class DebuggeeAgent implements Debugger {
     private final VariablesRegistry variablesRegistry;
 
     /** Registry mapping Qute templates to DAP {@link Source} objects. */
-    private final SourceTemplateRegistry sourceTemplateRegistry;
+    private final Map<Engine, SourceTemplateRegistry> sourceTemplateRegistry;
 
     /** The set of Qute engines being tracked for debugging. */
     private final Set<Engine> trackedEngine;
@@ -103,7 +103,7 @@ public class DebuggeeAgent implements Debugger {
         this.debuggees = new ConcurrentHashMap<>();
         this.listeners = new ArrayList<>();
         this.variablesRegistry = new VariablesRegistry();
-        this.sourceTemplateRegistry = new SourceTemplateRegistry();
+        this.sourceTemplateRegistry = new ConcurrentHashMap<>();
         this.trackedEngine = new HashSet<>();
         this.enginesWithDebugListener = new HashSet<>();
         this.evaluationSupport = new EvaluationSupport(this);
@@ -159,7 +159,7 @@ public class DebuggeeAgent implements Debugger {
         if (!isEnabled()) {
             return;
         }
-        RemoteThread debuggee = getOrCreateDebuggeeThread();
+        RemoteThread debuggee = getOrCreateDebuggeeThread(event.getEngine());
         debuggee.start();
     }
 
@@ -178,7 +178,7 @@ public class DebuggeeAgent implements Debugger {
         args.setCategory(OutputEventArgumentsCategory.CONSOLE);
         output(args);
 
-        RemoteThread debuggee = getOrCreateDebuggeeThread();
+        RemoteThread debuggee = getOrCreateDebuggeeThread(null);
         debuggee.onTemplateNode(event);
     }
 
@@ -191,7 +191,7 @@ public class DebuggeeAgent implements Debugger {
         if (!isEnabled()) {
             return;
         }
-        RemoteThread debuggee = getOrCreateDebuggeeThread();
+        RemoteThread debuggee = getOrCreateDebuggeeThread(event.getEngine());
         debuggees.remove(debuggee.getId());
         debuggee.exit();
     }
@@ -199,14 +199,16 @@ public class DebuggeeAgent implements Debugger {
     /**
      * Gets or creates a {@link RemoteThread} representing the current Java thread.
      *
+     * @param engine
+     *
      * @return the corresponding {@link RemoteThread}.
      */
-    private RemoteThread getOrCreateDebuggeeThread() {
+    private RemoteThread getOrCreateDebuggeeThread(Engine engine) {
         java.lang.Thread thread = java.lang.Thread.currentThread();
         int threadId = (int) thread.getId();
         RemoteThread debuggee = getRemoteThread(threadId);
         if (debuggee == null) {
-            debuggee = new RemoteThread(thread, this);
+            debuggee = new RemoteThread(thread, engine, this);
             debuggees.put(threadId, debuggee);
         }
         return debuggee;
@@ -221,8 +223,9 @@ public class DebuggeeAgent implements Debugger {
 
     @Override
     public Breakpoint[] setBreakpoints(SourceBreakpoint[] sourceBreakpoints, Source source) {
-        sourceTemplateRegistry.registerSource(source);
-        String templateId = sourceTemplateRegistry.getTemplateId(source);
+        var registry = getSourceTemplateRegistry(source);
+        registry.registerSource(source);
+        String templateId = registry.getTemplateId(source);
         Map<Integer, RemoteBreakpoint> templateBreakpoints = templateId != null
                 ? this.breakpoints.computeIfAbsent(templateId, k -> new HashMap<>())
                 : null;
@@ -247,6 +250,20 @@ public class DebuggeeAgent implements Debugger {
         return result;
     }
 
+    private SourceTemplateRegistry getSourceTemplateRegistry(Source source) {
+        if (trackedEngine.size() > 1) {
+            for (var engine : trackedEngine) {
+                var registry = getSourceTemplateRegistry(engine);
+                String templateId = registry.getTemplateId(source);
+                var location = engine.locate(templateId);
+                if (location.isPresent()) {
+                    return getSourceTemplateRegistry(engine);
+                }
+            }
+        }
+        return getSourceTemplateRegistry(trackedEngine.iterator().next());
+    }
+
     @Override
     public Thread getThread(int threadId) {
         return debuggees.get(threadId);
@@ -261,13 +278,15 @@ public class DebuggeeAgent implements Debugger {
      * Retrieves a breakpoint for the given template and line number.
      *
      * @param templateId the template identifier.
+     * @param engine
      * @param line the line number.
      * @return the matching breakpoint, or {@code null} if none exists.
      */
-    RemoteBreakpoint getBreakpoint(String templateId, int line) {
+    RemoteBreakpoint getBreakpoint(String templateId, Engine engine, int line) {
+        var registry = getSourceTemplateRegistry(engine);
         Map<Integer, RemoteBreakpoint> templateBreakpoints = this.breakpoints.get(templateId);
         if (templateBreakpoints == null) {
-            for (var fileExtension : sourceTemplateRegistry.getFileExtensions()) {
+            for (var fileExtension : registry.getFileExtensions()) {
                 templateBreakpoints = this.breakpoints.get(templateId + fileExtension);
                 if (templateBreakpoints != null) {
                     break;
@@ -474,8 +493,13 @@ public class DebuggeeAgent implements Debugger {
         return variablesRegistry;
     }
 
-    public SourceTemplateRegistry getSourceTemplateRegistry() {
-        return sourceTemplateRegistry;
+    public SourceTemplateRegistry getSourceTemplateRegistry(Engine engine) {
+        var registry = sourceTemplateRegistry.get(engine);
+        if (registry == null) {
+            registry = new SourceTemplateRegistry(engine);
+            sourceTemplateRegistry.put(engine, registry);
+        }
+        return registry;
     }
 
     @Override

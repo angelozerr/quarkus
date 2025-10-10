@@ -6,6 +6,7 @@ import java.util.function.Predicate;
 
 import org.eclipse.lsp4j.debug.Thread;
 
+import io.quarkus.qute.Engine;
 import io.quarkus.qute.TemplateNode;
 import io.quarkus.qute.debug.DebuggerState;
 import io.quarkus.qute.debug.DebuggerStoppedException;
@@ -71,17 +72,21 @@ public class RemoteThread extends Thread {
      */
     private transient Predicate<TemplateNode> stopCondition;
 
+    private transient final Engine engine;
+
     /**
      * Creates a new {@link RemoteThread} instance.
      *
      * @param thread the actual Java thread being debugged
+     * @param engine
      * @param agent the associated {@link DebuggeeAgent}
      */
-    public RemoteThread(java.lang.Thread thread, DebuggeeAgent agent) {
+    public RemoteThread(java.lang.Thread thread, Engine engine, DebuggeeAgent agent) {
         this.lock = new Object();
         this.frames = new LinkedList<>();
         super.setId((int) thread.getId());
         super.setName(thread.getName());
+        this.engine = engine;
         this.agent = agent;
         this.state = DebuggerState.INITIALIZED;
     }
@@ -163,7 +168,7 @@ public class RemoteThread extends Thread {
             return;
         }
 
-        RemoteStackFrame frame = new RemoteStackFrame(event, getCurrentFrame(), agent.getSourceTemplateRegistry(),
+        RemoteStackFrame frame = new RemoteStackFrame(event, getCurrentFrame(), agent.getSourceTemplateRegistry(engine),
                 agent.getVariablesRegistry());
         this.frames.addFirst(frame);
         String templateId = frame.getTemplateId();
@@ -174,7 +179,7 @@ public class RemoteThread extends Thread {
             this.suspendAndWait(StoppedReason.STEP);
         } else {
             int lineNumber = frame.getLine();
-            RemoteBreakpoint breakpoint = agent.getBreakpoint(templateId, lineNumber);
+            RemoteBreakpoint breakpoint = agent.getBreakpoint(templateId, engine, lineNumber);
             if (breakpoint != null // a breakpoint matches the frame line number
                     && (previous == null || !previous.getTemplateId().equals(templateId) || previous.getLine() != lineNumber
                             || event.getTemplateNode().isExpression())
