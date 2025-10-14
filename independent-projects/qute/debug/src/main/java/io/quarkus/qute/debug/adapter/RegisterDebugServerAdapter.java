@@ -251,9 +251,7 @@ public class RegisterDebugServerAdapter implements EngineListener {
     }
 
     public void reset() {
-        if (agent != null) {
-            agent.reset();
-        }
+        agent.reset();
         trackedEngines.clear();
         if (!notInitializedEngines.isEmpty()) {
             notInitializedEngines.forEach(engine -> {
