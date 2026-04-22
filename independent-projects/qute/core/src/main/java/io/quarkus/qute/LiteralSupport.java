@@ -4,7 +4,7 @@ import java.util.regex.Pattern;
 
 import org.jboss.logging.Logger;
 
-class LiteralSupport {
+public class LiteralSupport {
 
     private static final Logger LOGGER = Logger.getLogger(LiteralSupport.class);
 
@@ -18,7 +18,7 @@ class LiteralSupport {
      * @param literal
      * @return {@link Results.NotFound.EMPTY} if no literal was found, otherwise the literal value
      */
-    static Object getLiteralValue(String literal) {
+    public static Object getLiteralValue(String literal) {
         Object value = Results.NotFound.EMPTY;
         if (literal == null || literal.isEmpty()) {
             return value;

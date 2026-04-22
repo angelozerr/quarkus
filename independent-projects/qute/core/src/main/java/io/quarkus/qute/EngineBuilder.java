@@ -46,6 +46,7 @@ public final class EngineBuilder {
     final List<EngineListener> listeners;
     boolean enableTracing;
     ParserConfigurator parserConfigurator;
+    boolean useLegacyParser;
 
     EngineBuilder() {
         this.sectionHelperFactories = new HashMap<>();
@@ -67,6 +68,7 @@ public final class EngineBuilder {
                 return ParserConfig.DEFAULT;
             }
         };
+        this.useLegacyParser = true; // Default to legacy parser for backwards compatibility
     }
 
     /**
@@ -355,6 +357,20 @@ public final class EngineBuilder {
      */
     public EngineBuilder enableTracing(boolean value) {
         this.enableTracing = value;
+        return this;
+    }
+
+    /**
+     * Configure whether to use the legacy character-by-character parser or the new fault-tolerant AST parser.
+     * <p>
+     * The legacy parser is used by default for backwards compatibility.
+     * The new parser provides better error recovery and position tracking.
+     *
+     * @param value {@code true} to use the legacy parser (default), {@code false} to use the new parser
+     * @return self
+     */
+    public EngineBuilder useLegacyParser(boolean value) {
+        this.useLegacyParser = value;
         return this;
     }
 

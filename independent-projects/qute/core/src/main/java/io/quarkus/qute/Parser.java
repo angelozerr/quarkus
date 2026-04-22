@@ -35,6 +35,8 @@ import io.quarkus.qute.SectionHelperFactory.ParametersInfo;
 import io.quarkus.qute.SectionHelperFactory.ParserDelegate;
 import io.quarkus.qute.TemplateLocator.TemplateLocation;
 import io.quarkus.qute.TemplateNode.Origin;
+import io.quarkus.qute.parser.template.ASTVisitor;
+import io.quarkus.qute.parser.template.TemplateParser;
 
 /**
  * Simple non-reusable parser.
@@ -157,11 +159,392 @@ class Parser implements ParserHelper, ParserDelegate, WithOrigin, ErrorInitializ
                 r = new StringReader(contents);
             }
 
-            int val;
-            while ((val = r.read()) != -1) {
-                processCharacter((char) val);
-                lineCharacter++;
+            String content = toString(r);
+            io.quarkus.qute.parser.template.TemplateNode ast = new io.quarkus.qute.parser.template.TemplateNode(content);
+            TemplateParser.parse(ast);
+
+            // Helper to convert offsets to Origin with proper line/character positions
+            class OriginHelper {
+                private final int[] lineOffsets;
+
+                OriginHelper() {
+                    // Pre-compute line start offsets for O(log n) position calculation
+                    List<Integer> offsets = new ArrayList<>();
+                    offsets.add(0);
+                    for (int i = 0; i < content.length(); i++) {
+                        char c = content.charAt(i);
+                        if (c == '\n') {
+                            offsets.add(i + 1);
+                        } else if (c == '\r' && (i + 1 >= content.length() || content.charAt(i + 1) != '\n')) {
+                            offsets.add(i + 1);
+                        }
+                    }
+                    lineOffsets = offsets.stream().mapToInt(Integer::intValue).toArray();
+                }
+
+                Origin createOrigin(int startOffset, int endOffset) {
+                    int lineNum = getLineNumber(startOffset);
+                    int lineStart = lineOffsets[lineNum - 1];
+                    int lineCharStart = startOffset - lineStart + 1;
+                    int lineCharEnd = endOffset - lineStart + 1;
+                    return new OriginImpl(lineNum, lineCharStart, lineCharEnd, templateId, generatedId,
+                            location.getVariant());
+                }
+
+                int getLineNumber(int offset) {
+                    for (int i = 1; i < lineOffsets.length; i++) {
+                        if (offset < lineOffsets[i]) {
+                            return i;
+                        }
+                    }
+                    return lineOffsets.length;
+                }
             }
+
+            OriginHelper originHelper = new OriginHelper();
+
+            ASTVisitor visitor = new ASTVisitor() {
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.Text node) {
+                    if (!ignoreContent) {
+                        SectionBlock.Builder block = sectionStack.peek().currentBlock();
+                        String textContent = node.getContent();
+                        int nodeStart = node.getStart();
+
+                        // Check if text contains line separators
+                        if (textContent != null && !textContent.isEmpty()) {
+                            // Split text by line separators
+                            int textStart = 0;
+                            for (int i = 0; i < textContent.length(); i++) {
+                                char c = textContent.charAt(i);
+                                if (c == '\n') {
+                                    hasLineSeparator = true;
+                                    // Add text before line separator
+                                    if (i > textStart) {
+                                        String beforeLineSep = textContent.substring(textStart, i);
+                                        int start = nodeStart + textStart;
+                                        int end = nodeStart + i;
+                                        block.addNode(new TextNode(beforeLineSep, originHelper.createOrigin(start, end)));
+                                    }
+                                    // Add line separator (CRLF or LF)
+                                    String lineSep;
+                                    int lineSepStart;
+                                    if (i > 0 && textContent.charAt(i - 1) == '\r') {
+                                        lineSep = "\r\n";
+                                        lineSepStart = nodeStart + i - 1;
+                                    } else {
+                                        lineSep = "\n";
+                                        lineSepStart = nodeStart + i;
+                                    }
+                                    block.addNode(new LineSeparatorNode(lineSep,
+                                            originHelper.createOrigin(lineSepStart, lineSepStart + lineSep.length())));
+                                    textStart = i + 1;
+                                } else if (c == '\r' && (i + 1 >= textContent.length() || textContent.charAt(i + 1) != '\n')) {
+                                    hasLineSeparator = true;
+                                    // Add text before line separator
+                                    if (i > textStart) {
+                                        String beforeLineSep = textContent.substring(textStart, i);
+                                        int start = nodeStart + textStart;
+                                        int end = nodeStart + i;
+                                        block.addNode(new TextNode(beforeLineSep, originHelper.createOrigin(start, end)));
+                                    }
+                                    // Add line separator (CR only)
+                                    int lineSepStart = nodeStart + i;
+                                    block.addNode(new LineSeparatorNode("\r",
+                                            originHelper.createOrigin(lineSepStart, lineSepStart + 1)));
+                                    textStart = i + 1;
+                                }
+                            }
+                            // Add remaining text
+                            if (textStart < textContent.length()) {
+                                String remainingText = textContent.substring(textStart);
+                                int start = nodeStart + textStart;
+                                int end = nodeStart + textContent.length();
+                                block.addNode(new TextNode(remainingText, originHelper.createOrigin(start, end)));
+                            }
+                        }
+                    }
+                    return false; // Text nodes have no children
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.Expression node) {
+                    if (!ignoreContent) {
+                        SectionBlock.Builder block = sectionStack.peek().currentBlock();
+                        String exprContent = node.getContent();
+                        if (exprContent != null && !exprContent.isEmpty()) {
+                            Origin exprOrigin = originHelper.createOrigin(node.getStart(), node.getEnd());
+                            ExpressionImpl expr = parseExpression(expressionIdGenerator::incrementAndGet, exprContent,
+                                    scopeStack.peek(), exprOrigin);
+                            block.addNode(new ExpressionNode(expr, engine));
+                        }
+                    }
+                    return false; // Expression nodes are handled
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.ParameterDeclaration node) {
+                    if (!ignoreContent) {
+                        Scope currentScope = scopeStack.peek();
+                        Origin paramOrigin = originHelper.createOrigin(node.getStart(), node.getEnd());
+
+                        String javaType = node.getJavaType();
+                        String alias = node.getAlias();
+
+                        if (alias != null && javaType != null) {
+                            String typeInfo = Expressions.typeInfoFrom(javaType);
+                            currentScope.putBinding(alias, typeInfo);
+
+                            ExpressionImpl defaultValueExpr = null;
+                            if (node.hasDefaultValue()) {
+                                String defaultValue = node.getDefaultValue();
+                                // Remove quotes if present
+                                if (defaultValue != null && defaultValue.length() >= 2) {
+                                    char first = defaultValue.charAt(0);
+                                    if ((first == '\'' || first == '"')
+                                            && defaultValue.charAt(defaultValue.length() - 1) == first) {
+                                        defaultValue = defaultValue.substring(1, defaultValue.length() - 1);
+                                    }
+                                }
+                                if (defaultValue != null && !defaultValue.isEmpty()) {
+                                    Origin defaultOrigin = originHelper.createOrigin(node.getDefaultValueStart(),
+                                            node.getDefaultValueEnd());
+                                    defaultValueExpr = parseExpression(expressionIdGenerator::incrementAndGet, defaultValue,
+                                            scopeStack.peek(), defaultOrigin);
+                                }
+                            }
+
+                            sectionStack.peek().currentBlock().addNode(
+                                    new ParameterDeclarationNode(typeInfo, alias, defaultValueExpr, paramOrigin));
+
+                            // Handle default value with synthetic {#let} section
+                            if (defaultValueExpr != null) {
+                                SectionHelperFactory<?> factory = engine.getSectionHelperFactory("let");
+                                if (factory != null) {
+                                    SectionNode.Builder sectionNode = SectionNode
+                                            .builder("let", syntheticOrigin(), Parser.this, Parser.this)
+                                            .setEngine(engine)
+                                            .setHelperFactory(factory);
+
+                                    paramsStack.addFirst(factory.getParameters());
+                                    String paramValue = alias + "?=" + node.getDefaultValue();
+                                    processParams("{@" + javaType + " " + alias + "}",
+                                            SectionHelperFactory.MAIN_BLOCK_NAME,
+                                            List.of(paramValue).iterator(),
+                                            sectionNode.currentBlock());
+
+                                    Scope newScope = factory.initializeBlock(currentScope, sectionNode.currentBlock());
+                                    scopeStack.addFirst(newScope);
+                                    sectionStack.addFirst(sectionNode);
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.CustomSection node) {
+                    return visitSection(node);
+                }
+
+                private boolean visitSection(io.quarkus.qute.parser.template.Section node) {
+                    if (ignoreContent) {
+                        return false;
+                    }
+
+                    String sectionName = node.getTag();
+
+                    if (sectionName == null || sectionName.isEmpty()) {
+                        return true; // Visit children
+                    }
+
+                    Origin sectionOrigin = originHelper.createOrigin(node.getStart(), node.getEnd());
+                    SectionNode.Builder lastSection = sectionStack.peek();
+
+                    // Check if this is a section block (like {#else})
+                    if (lastSection != null && lastSection.factory.getBlockLabels().contains(sectionName)
+                            || (lastSection.factory.treatUnknownSectionsAsBlocks()
+                                    && !engine.getSectionHelperFactories().containsKey(sectionName))) {
+
+                        // Create section block
+                        SectionBlock.Builder block = SectionBlock.builder("" + sectionBlockIdx++, Parser.this, Parser.this)
+                                .setOrigin(sectionOrigin)
+                                .setLabel(sectionName);
+                        lastSection.addBlock(block);
+
+                        // Process parameters
+                        String paramContent = node.getExpressionContent();
+                        if (paramContent != null && !paramContent.isEmpty()) {
+                            Iterator<String> iter = splitSectionParams("#" + sectionName + " " + paramContent, Parser.this);
+                            if (iter.hasNext()) {
+                                iter.next(); // Skip section name
+                            }
+                            processParams("{#" + sectionName + "}", sectionName, iter, block);
+                        }
+
+                        // Initialize block scope
+                        Scope currentScope = scopeStack.peek();
+                        Scope newScope = lastSection.factory.initializeBlock(currentScope, block);
+                        scopeStack.addFirst(newScope);
+
+                        // Visit children
+                        for (io.quarkus.qute.parser.template.Node child : node.getChildren()) {
+                            child.accept(this);
+                        }
+
+                        // Pop scope
+                        scopeStack.pop();
+
+                    } else {
+                        // Create new section
+                        SectionHelperFactory<?> factory = engine.getSectionHelperFactory(sectionName);
+                        if (factory == null) {
+                            // Unknown section - skip or handle error
+                            return true;
+                        }
+
+                        SectionNode.Builder sectionNode = SectionNode
+                                .builder(sectionName, sectionOrigin, Parser.this, Parser.this)
+                                .setEngine(engine)
+                                .setHelperFactory(factory);
+
+                        paramsStack.addFirst(factory.getParameters());
+
+                        // Process parameters
+                        String paramContent = node.getExpressionContent();
+                        if (paramContent != null && !paramContent.isEmpty()) {
+                            Iterator<String> iter = splitSectionParams("#" + sectionName + " " + paramContent, Parser.this);
+                            if (iter.hasNext()) {
+                                iter.next(); // Skip section name
+                            }
+                            processParams("{#" + sectionName + "}", SectionHelperFactory.MAIN_BLOCK_NAME, iter,
+                                    sectionNode.currentBlock());
+                        }
+
+                        // Initialize section scope
+                        Scope currentScope = scopeStack.peek();
+                        Scope newScope = factory.initializeBlock(currentScope, sectionNode.currentBlock());
+
+                        // Check if this is a self-closed section
+                        boolean isSelfClosed = node.isSelfClosed() || !node.hasEndTag();
+
+                        if (isSelfClosed) {
+                            paramsStack.pop();
+                            sectionStack.peek().currentBlock().addNode(sectionNode.build(() -> currentTemplate()));
+                        } else {
+                            scopeStack.addFirst(newScope);
+                            sectionStack.addFirst(sectionNode);
+
+                            // Visit children
+                            for (io.quarkus.qute.parser.template.Node child : node.getChildren()) {
+                                child.accept(this);
+                            }
+
+                            // Pop section and scope
+                            SectionNode.Builder section = sectionStack.pop();
+                            sectionStack.peek().currentBlock().addNode(section.build(() -> currentTemplate()));
+                            scopeStack.pop();
+                        }
+                    }
+
+                    return false; // We handled children ourselves
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.IfSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.EachSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.ForSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.LetSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.SetSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.WithSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.WhenSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.SwitchSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.IncludeSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.InsertSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.FragmentSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.ElseSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.CaseSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.sections.IsSection node) {
+                    return visitSection(node);
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.Comment node) {
+                    if (!ignoreContent && engine.removeStandaloneLines) {
+                        sectionStack.peek().currentBlock().addNode(COMMENT_NODE);
+                    }
+                    return false;
+                }
+
+                @Override
+                public boolean visit(io.quarkus.qute.parser.template.CData node) {
+                    if (!ignoreContent) {
+                        // Treat CData content as text
+                        String cdataContent = content.substring(node.getStartContent(), node.getEndContent());
+                        if (cdataContent != null && !cdataContent.isEmpty()) {
+                            SectionBlock.Builder block = sectionStack.peek().currentBlock();
+                            Origin cdataOrigin = originHelper.createOrigin(node.getStartContent(), node.getEndContent());
+                            block.addNode(new TextNode(cdataContent, cdataOrigin));
+                        }
+                    }
+                    return false;
+                }
+            };
+            ast.accept(visitor);
 
             if (buffer.length() > 0) {
                 if (state == State.TEXT || state == State.LINE_SEPARATOR) {

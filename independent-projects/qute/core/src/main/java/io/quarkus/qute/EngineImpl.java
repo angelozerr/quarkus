@@ -40,6 +40,7 @@ class EngineImpl implements Engine {
     private final boolean useAsyncTimeout;
     final TraceManagerImpl traceManager;
     final ParserConfigurator parserConfigurator;
+    final boolean useLegacyParser;
 
     EngineImpl(EngineBuilder builder) {
         this.sectionHelperFactories = Map.copyOf(builder.sectionHelperFactories);
@@ -58,14 +59,44 @@ class EngineImpl implements Engine {
         this.useAsyncTimeout = builder.useAsyncTimeout;
         this.traceManager = builder.enableTracing ? new TraceManagerImpl() : null;
         this.parserConfigurator = builder.parserConfigurator;
+        this.useLegacyParser = builder.useLegacyParser;
     }
 
     @Override
     public Template parse(String content, Variant variant, String id) {
         String generatedId = generateId();
         StringTemplateLocation location = new StringTemplateLocation(content, Optional.ofNullable(variant));
-        return newParser(id != null ? id : generatedId, location.read(), location, generatedId)
-                .parse();
+
+        if (useLegacyParser) {
+            // Use legacy character-by-character parser
+            return newParser(id != null ? id : generatedId, location.read(), location, generatedId)
+                    .parse();
+        } else {
+            // Use new fault-tolerant AST parser
+            return parseWithNewParser(content, id != null ? id : generatedId, generatedId,
+                    Optional.ofNullable(variant), location.getSource());
+        }
+    }
+
+    /**
+     * Parse template using the new fault-tolerant AST parser.
+     */
+    private Template parseWithNewParser(String content, String templateId, String generatedId,
+            Optional<Variant> variant, Optional<java.net.URI> source) {
+        // Create AST and parse
+        io.quarkus.qute.parser.template.TemplateNode ast = new io.quarkus.qute.parser.template.TemplateNode(content);
+
+        // Set template metadata
+        ast.setTemplateId(templateId);
+        ast.setGeneratedId(generatedId);
+        ast.setVariant(variant);
+        ast.setSource(source);
+
+        // Parse the template
+        io.quarkus.qute.parser.template.TemplateParser.parse(ast);
+
+        // Return the AST as Template (it implements Template interface)
+        return ast;
     }
 
     private Parser newParser(String id, Reader reader, TemplateLocation location, String generatedId) {
